@@ -1,11 +1,10 @@
 import sqlite3
 import signal
 import argparse
-from functools import partial
-import time
-from prettytable import PrettyTable
-from termcolor import colored
 import os
+import time
+from functools import partial
+from prettytable import PrettyTable
 
 class Color:
     def __init__(self):
@@ -59,18 +58,21 @@ class SQT:
                           );''')
         self.conn.commit()
 
-    def create_colored_queue(self, user_input):
-        # check that value doesn't already exist
-        self.c.execute('''SELECT * FROM color_ref WHERE color = ?''', (user_input,))
-        if self.c.fetchone() is not None:
-            print("{} colored queue already exists".format(user_input))
-            return
-        # insert value
-        self.c.execute('''INSERT INTO color_ref(color)
-                          VALUES
-                          (?)
-                        ''', (user_input,))
-        self.conn.commit()
+    def create_colored_queue(self, *args):
+        try:
+            # check that value doesn't already exist
+            self.c.execute('''SELECT * FROM color_ref WHERE color = ?''', (args[1],))
+            if self.c.fetchone() is not None:
+                print("{} colored queue already exists".format(args[1]))
+                return
+            # insert value
+            self.c.execute('''INSERT INTO color_ref(color)
+                              VALUES
+                              (?)
+                            ''', (args[1],))
+            self.conn.commit()
+        except Exception as e:
+            print('Invalid input. \nUsage: create <color>')
 
     def view(self, *args):
         try:
@@ -97,9 +99,10 @@ class SQT:
                         if x[i] == "--":
                             row.append(self.color_ob.color("--",colors[ind]) + "\n\n")
                         else:
-                            pri = x[i][3]
+                            id = x[i][0]
+                            priority = x[i][3]
                             title = x[i][2]
-                            row_str = "{} - {}".format(pri, title)
+                            row_str = "{} - {}\nPriority: {}".format(id, title, priority)
                             if len(x[i][4]) > 0:  # description
                                 row_str += "\n{}".format(x[i][4])
                             if x[i][5] != 0:
@@ -110,21 +113,37 @@ class SQT:
             elif args[1] == "top":
                 row = []
                 for ind, x in enumerate(queue_items):
-                    pri = x[0][3]
+                    id = x[0][0]
+                    priority = x[0][3]
                     title = x[0][2]
-                    row_str = "{} - {}".format(pri, title)
+                    row_str = "{} - {}\n\tPriority: {}".format(id, title, priority)
                     if len(x[0][4]) > 0:
                         row_str += "\n{}".format(x[0][4])
                     if x[0][5] != 0:
-                        row_str += "\nTime requirement: {}".format(x[0][5])
+                        row_str += "\n\tTime requirement: {}".format(x[0][5])
                     row.append(self.color_ob.color(row_str, colors[ind]) + "\n\n")
                 output.add_row(row)
                 print(output)
             else:
-                print("Please use 'view all' or 'view top')")
+                output = PrettyTable([self.color_ob.color(args[1], args[1])])
+                color_ref = self.c.execute('''SELECT * FROM color_ref WHERE color = ?''',(args[1],)).fetchone()
+                if not color_ref:
+                    print("Please use 'view all' or 'view top' or 'view <queue>)")
+                rows = self.c.execute('''SELECT * FROM items WHERE
+                                         color_id = ? ORDER BY priority ASC''',(color_ref[0],)).fetchall()
+                for x in rows:
+                    id = x[0]
+                    priority = x[3]
+                    title = x[2]
+                    row_str = "{} - {}\nPriority: {}".format(id, title, priority)
+                    if len(x[4]) > 0:  # description
+                        row_str += "\n{}".format(x[4])
+                    if x[5] != 0:
+                        row_str += "\nTime requirement: {}".format(x[5])
+                    output.add_row([self.color_ob.color(row_str, args[1]) + "\n\n"])
+                print(output)
         except Exception as e:
-            print(e)
-            print("Invalid input.")
+            print("Invalid input.\nUsage: view < all | top | queue_name >")
 
     def insert(self, *args):
         # user input: insert <queue> <name> <priority> [--desc <"desc text"> --time <int>]
@@ -147,20 +166,26 @@ class SQT:
                         desc += arg + " "
                     if parsing_time:
                         time_requirement = int(arg)
-                desc = desc[1:-2]
+                # remove quotes if present
+                if len(desc) and (desc[0] == '"' or desc[0] == "'") and \
+                        (desc[-1] == "'" or desc[-1] == '"'):
+                    desc = desc[1:-2]
             self.c.execute('''SELECT * FROM color_ref WHERE color = ?''', (args[1],))
             row = self.c.fetchone()
             if row is None:
                 print("Invalid colored queue name.")
                 return
-            # row exists
+            # colored queue exists
+            priority = 100 # TODO: make configurable?
+            if len(args) > 3 and args[3].isdigit():
+                priority = int(args[3])
             self.c.execute('''INSERT INTO items(color_id,title, priority, description, time_requirement)
                               VALUES
                               (?, ?, ?, ?, ?)
-                           ''', (row[0],args[2],args[3], desc, time_requirement))
+                           ''', (row[0],args[2],priority, desc, time_requirement))
             self.conn.commit()
         except Exception as e:
-            print("Invalid input.")
+            print("Invalid input.\nUsage: insert <queue> <name> <priority> [--desc <\"desc text\"> --time <int>]")
 
     def remove(self, *args):
         # user input: remove <queue> [row]
@@ -176,19 +201,19 @@ class SQT:
                 print("{} queue removed.".format(args[1]))
             else: # delete item from queue
                 self.c.execute('''DELETE FROM items
-                                WHERE title = ?
+                                WHERE id = ?
                                 ''', (args[2],))
                 print("{} removed from {} queue.".format(args[2], args[1]))
             self.conn.commit()
         except Exception as e:
-            print("Invalid input.")
+            print("Invalid input.\nUsage: remove <queue> [row]")
 
 
     def process_input(self, input):
         try:
             split_input = input.split()
             if split_input[0] == 'create':
-                self.create_colored_queue(split_input[1])
+                self.create_colored_queue(*split_input)
             elif split_input[0] == 'insert':
                 self.insert(*split_input)
             elif split_input[0] == 'remove':
@@ -197,14 +222,14 @@ class SQT:
                 pass
             elif split_input[0] == 'view':
                 self.view(*split_input)
-            elif split_input[0] == 'quit':
+            elif split_input[0] == 'exit':
                 # using boolean to keep I/O error from occurring
                 self.exiting = True
                 return
             else:
                 print("Invalid input.")
         except:
-            print("Invalid input.")
+            print("Invalid input.") # TODO print help
 
 def main():
     #parser = argparse.ArgumentParser(description='Simple Queue Tool')
@@ -219,7 +244,8 @@ def main():
 
     while True:
         action = input("sqt>>").lower()
-        sqt.process_input(action)
+        if len(action):
+            sqt.process_input(action)
         if sqt.exiting:
             graceful_exit(conn)
 
@@ -236,8 +262,11 @@ if __name__ == '__main__':
 
 # TODO
 # document/test better
+# make README
+# make title --> color mapper and remove color titles
 # allow user to make aliases
-# allow quotes for longer args
 # implement help
 # list dependencies
 # put usage in except for each input
+# make remove num possible instead of remove <queue> <num>
+#  -- require that queues are not named with digits only
